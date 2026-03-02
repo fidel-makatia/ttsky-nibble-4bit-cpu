@@ -3,7 +3,7 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, RisingEdge, FallingEdge
+from cocotb.triggers import ClockCycles, RisingEdge, FallingEdge, Timer
 
 
 # ---- Opcode encoding helpers ----
@@ -44,6 +44,18 @@ def get_pc(dut):
     return int(dut.uio_out.value) & 0x0F
 
 
+async def rom_driver(dut, rom):
+    """Continuously drive ui_in based on PC, like a combinational ROM.
+
+    Updates ui_in on every falling edge so it's stable before the next
+    rising edge where the CPU latches the instruction during FETCH.
+    """
+    while True:
+        await FallingEdge(dut.clk)
+        pc = get_pc(dut)
+        dut.ui_in.value = rom.get(pc, 0x00)
+
+
 async def reset_cpu(dut):
     """Reset the CPU and release cleanly."""
     dut.ena.value = 1
@@ -55,31 +67,13 @@ async def reset_cpu(dut):
     dut.rst_n.value = 1
 
 
-async def run_with_rom(dut, rom, num_instructions):
-    """Run N instructions (2 clock cycles each), driving ui_in from ROM based on PC."""
-    for _ in range(num_instructions):
-        # FETCH edge
-        await RisingEdge(dut.clk)
-        # Drive instruction based on current PC
-        pc = get_pc(dut)
-        dut.ui_in.value = rom.get(pc, 0x00)
-        # EXECUTE edge
-        await RisingEdge(dut.clk)
-    # Small settle time
-    await cocotb.triggers.Timer(1, units="ns")
-
-
-async def run_until_halt(dut, rom, max_cycles=500):
-    """Run the CPU until it halts, driving ROM. Returns cycle count."""
-    cycles = 0
-    for _ in range(max_cycles):
-        await RisingEdge(dut.clk)
-        pc = get_pc(dut)
-        dut.ui_in.value = rom.get(pc, 0x00)
-        cycles += 1
-        if get_halted(dut):
-            return cycles
-    raise TimeoutError(f"CPU did not halt within {max_cycles} cycles")
+async def run_instructions(dut, n):
+    """Run N full instructions (2 clock cycles each: FETCH + EXECUTE).
+    After this, the Nth instruction's result is visible."""
+    for _ in range(n):
+        await RisingEdge(dut.clk)  # FETCH
+        await RisingEdge(dut.clk)  # EXECUTE
+    await Timer(1, unit="ns")
 
 
 @cocotb.test()
@@ -102,37 +96,38 @@ async def test_basic_alu(dut):
     }
 
     await reset_cpu(dut)
+    cocotb.start_soon(rom_driver(dut, rom))
 
-    await run_with_rom(dut, rom, 1)  # LDI 5
+    await run_instructions(dut, 1)  # LDI 5
     assert get_acc(dut) == 5, f"LDI 5: expected 5, got {get_acc(dut)}"
 
-    await run_with_rom(dut, rom, 1)  # ADD 3
+    await run_instructions(dut, 1)  # ADD 3
     assert get_acc(dut) == 8, f"ADD 3: expected 8, got {get_acc(dut)}"
 
-    await run_with_rom(dut, rom, 1)  # SUB 2
+    await run_instructions(dut, 1)  # SUB 2
     assert get_acc(dut) == 6, f"SUB 2: expected 6, got {get_acc(dut)}"
 
-    await run_with_rom(dut, rom, 1)  # AND 12
+    await run_instructions(dut, 1)  # AND 12
     assert get_acc(dut) == 4, f"AND 12: expected 4, got {get_acc(dut)}"
 
-    await run_with_rom(dut, rom, 1)  # OR 1
+    await run_instructions(dut, 1)  # OR 1
     assert get_acc(dut) == 5, f"OR 1: expected 5, got {get_acc(dut)}"
 
-    await run_with_rom(dut, rom, 1)  # XOR 15
+    await run_instructions(dut, 1)  # XOR 15
     assert get_acc(dut) == 10, f"XOR 15: expected 10, got {get_acc(dut)}"
 
-    await run_with_rom(dut, rom, 1)  # NOT
+    await run_instructions(dut, 1)  # NOT
     assert get_acc(dut) == 5, f"NOT: expected 5, got {get_acc(dut)}"
 
-    await run_with_rom(dut, rom, 1)  # LDI 0
+    await run_instructions(dut, 1)  # LDI 0
     assert get_acc(dut) == 0, f"LDI 0: expected 0, got {get_acc(dut)}"
     assert get_zero(dut) == 1, "Z flag should be set after LDI 0"
 
-    await run_with_rom(dut, rom, 1)  # SUB 1
+    await run_instructions(dut, 1)  # SUB 1
     assert get_acc(dut) == 15, f"SUB 1 underflow: expected 15, got {get_acc(dut)}"
     assert get_carry(dut) == 1, "C flag should be set after underflow"
 
-    await run_with_rom(dut, rom, 1)  # HLT
+    await run_instructions(dut, 1)  # HLT
     assert get_halted(dut) == 1, "CPU should be halted"
 
 
@@ -157,38 +152,39 @@ async def test_shift_operations(dut):
     }
 
     await reset_cpu(dut)
+    cocotb.start_soon(rom_driver(dut, rom))
 
-    await run_with_rom(dut, rom, 1)  # LDI 1
+    await run_instructions(dut, 1)  # LDI 1
     assert get_acc(dut) == 1
 
-    await run_with_rom(dut, rom, 1)  # SHL
+    await run_instructions(dut, 1)  # SHL
     assert get_acc(dut) == 2
     assert get_carry(dut) == 0
 
-    await run_with_rom(dut, rom, 1)  # SHL
+    await run_instructions(dut, 1)  # SHL
     assert get_acc(dut) == 4
 
-    await run_with_rom(dut, rom, 1)  # SHL
+    await run_instructions(dut, 1)  # SHL
     assert get_acc(dut) == 8
 
-    await run_with_rom(dut, rom, 1)  # SHL overflow
+    await run_instructions(dut, 1)  # SHL overflow
     assert get_acc(dut) == 0
     assert get_carry(dut) == 1, "Carry should be set after SHL overflow"
     assert get_zero(dut) == 1, "Zero should be set after SHL to 0"
 
-    await run_with_rom(dut, rom, 1)  # LDI 8
+    await run_instructions(dut, 1)  # LDI 8
     assert get_acc(dut) == 8
 
-    await run_with_rom(dut, rom, 1)  # SHR
+    await run_instructions(dut, 1)  # SHR
     assert get_acc(dut) == 4
 
-    await run_with_rom(dut, rom, 1)  # SHR
+    await run_instructions(dut, 1)  # SHR
     assert get_acc(dut) == 2
 
-    await run_with_rom(dut, rom, 1)  # SHR
+    await run_instructions(dut, 1)  # SHR
     assert get_acc(dut) == 1
 
-    await run_with_rom(dut, rom, 1)  # SHR underflow
+    await run_instructions(dut, 1)  # SHR underflow
     assert get_acc(dut) == 0
     assert get_carry(dut) == 1, "Carry should be set after SHR underflow"
     assert get_zero(dut) == 1, "Zero should be set after SHR to 0"
@@ -220,29 +216,30 @@ async def test_branching(dut):
     }
 
     await reset_cpu(dut)
+    cocotb.start_soon(rom_driver(dut, rom))
 
-    await run_with_rom(dut, rom, 1)  # LDI 0
+    await run_instructions(dut, 1)  # LDI 0
     assert get_acc(dut) == 0
     assert get_zero(dut) == 1
 
-    await run_with_rom(dut, rom, 1)  # JZ 4
+    await run_instructions(dut, 1)  # JZ 4
 
-    await run_with_rom(dut, rom, 1)  # LDI 7 (at addr 4)
+    await run_instructions(dut, 1)  # LDI 7 (at addr 4)
     assert get_acc(dut) == 7, f"JZ should have jumped: expected 7, got {get_acc(dut)}"
 
-    await run_with_rom(dut, rom, 1)  # JNZ 8
+    await run_instructions(dut, 1)  # JNZ 8
 
-    await run_with_rom(dut, rom, 1)  # ADD 9 (at addr 8)
+    await run_instructions(dut, 1)  # ADD 9 (at addr 8)
     assert get_acc(dut) == 0, f"7+9 overflow: expected 0, got {get_acc(dut)}"
     assert get_carry(dut) == 1
 
-    await run_with_rom(dut, rom, 1)  # JC 12
-    await run_with_rom(dut, rom, 1)  # JMP 14 (at addr 12)
+    await run_instructions(dut, 1)  # JC 12
+    await run_instructions(dut, 1)  # JMP 14 (at addr 12)
 
-    await run_with_rom(dut, rom, 1)  # LDI 3 (at addr 14)
+    await run_instructions(dut, 1)  # LDI 3 (at addr 14)
     assert get_acc(dut) == 3, f"JMP chain: expected 3, got {get_acc(dut)}"
 
-    await run_with_rom(dut, rom, 1)  # HLT
+    await run_instructions(dut, 1)  # HLT
     assert get_halted(dut) == 1
 
 
@@ -260,22 +257,23 @@ async def test_counter_loop(dut):
     }
 
     await reset_cpu(dut)
+    cocotb.start_soon(rom_driver(dut, rom))
 
     # LDI 0
-    await run_with_rom(dut, rom, 1)
+    await run_instructions(dut, 1)
     assert get_acc(dut) == 0
 
     # Run 15 iterations of (ADD + JNZ) = 30 instructions
-    await run_with_rom(dut, rom, 30)
+    await run_instructions(dut, 30)
     assert get_acc(dut) == 15, f"Counter at 15: expected 15, got {get_acc(dut)}"
 
     # One more ADD wraps to 0, then JNZ falls through
-    await run_with_rom(dut, rom, 2)
+    await run_instructions(dut, 2)
     assert get_acc(dut) == 0
     assert get_zero(dut) == 1
 
     # HLT
-    await run_with_rom(dut, rom, 1)
+    await run_instructions(dut, 1)
     assert get_halted(dut) == 1
 
 
@@ -300,12 +298,13 @@ async def test_fibonacci(dut):
     expected = [0, 1, 1, 2, 3, 5, 8, 13]
 
     await reset_cpu(dut)
+    cocotb.start_soon(rom_driver(dut, rom))
 
     for i, exp in enumerate(expected):
-        await run_with_rom(dut, rom, 1)
+        await run_instructions(dut, 1)
         assert get_acc(dut) == exp, f"fib({i}) = {exp}: got {get_acc(dut)}"
 
-    await run_with_rom(dut, rom, 1)  # HLT
+    await run_instructions(dut, 1)  # HLT
     assert get_halted(dut) == 1
 
 
@@ -323,12 +322,13 @@ async def test_input_port(dut):
 
     await reset_cpu(dut)
     dut.uio_in.value = 0x90  # port_in = 9 (upper nibble)
+    cocotb.start_soon(rom_driver(dut, rom))
 
-    await run_with_rom(dut, rom, 1)  # IN
+    await run_instructions(dut, 1)  # IN
     assert get_acc(dut) == 9, f"IN: expected 9, got {get_acc(dut)}"
 
-    await run_with_rom(dut, rom, 1)  # ADD 1
+    await run_instructions(dut, 1)  # ADD 1
     assert get_acc(dut) == 10, f"ADD 1: expected 10, got {get_acc(dut)}"
 
-    await run_with_rom(dut, rom, 1)  # HLT
+    await run_instructions(dut, 1)  # HLT
     assert get_halted(dut) == 1
