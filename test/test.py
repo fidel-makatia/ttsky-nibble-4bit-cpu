@@ -56,8 +56,13 @@ async def rom_driver(dut, rom):
         dut.ui_in.value = rom.get(pc, 0x00)
 
 
-async def reset_cpu(dut):
-    """Reset the CPU and release cleanly."""
+async def reset_cpu(dut, rom=None):
+    """Reset the CPU and release cleanly.
+
+    If rom is provided, pre-loads ui_in with rom[0] so the first FETCH
+    gets the correct instruction (the rom_driver coroutine runs on
+    FallingEdge, which is too late for the very first RisingEdge FETCH).
+    """
     dut.ena.value = 1
     dut.rst_n.value = 0
     dut.ui_in.value = 0
@@ -65,6 +70,8 @@ async def reset_cpu(dut):
     await ClockCycles(dut.clk, 2)
     await FallingEdge(dut.clk)
     dut.rst_n.value = 1
+    if rom is not None:
+        dut.ui_in.value = rom.get(0, 0x00)
 
 
 async def run_instructions(dut, n):
@@ -95,7 +102,7 @@ async def test_basic_alu(dut):
         9: HLT(),
     }
 
-    await reset_cpu(dut)
+    await reset_cpu(dut, rom)
     cocotb.start_soon(rom_driver(dut, rom))
 
     await run_instructions(dut, 1)  # LDI 5
@@ -151,7 +158,7 @@ async def test_shift_operations(dut):
         10: HLT(),
     }
 
-    await reset_cpu(dut)
+    await reset_cpu(dut, rom)
     cocotb.start_soon(rom_driver(dut, rom))
 
     await run_instructions(dut, 1)  # LDI 1
@@ -215,7 +222,7 @@ async def test_branching(dut):
         15: HLT(),
     }
 
-    await reset_cpu(dut)
+    await reset_cpu(dut, rom)
     cocotb.start_soon(rom_driver(dut, rom))
 
     await run_instructions(dut, 1)  # LDI 0
@@ -256,7 +263,7 @@ async def test_counter_loop(dut):
         3: HLT(),     # halt when A wraps to 0
     }
 
-    await reset_cpu(dut)
+    await reset_cpu(dut, rom)
     cocotb.start_soon(rom_driver(dut, rom))
 
     # LDI 0
@@ -297,7 +304,7 @@ async def test_fibonacci(dut):
 
     expected = [0, 1, 1, 2, 3, 5, 8, 13]
 
-    await reset_cpu(dut)
+    await reset_cpu(dut, rom)
     cocotb.start_soon(rom_driver(dut, rom))
 
     for i, exp in enumerate(expected):
@@ -320,7 +327,7 @@ async def test_input_port(dut):
         2: HLT(),
     }
 
-    await reset_cpu(dut)
+    await reset_cpu(dut, rom)
     dut.uio_in.value = 0x90  # port_in = 9 (upper nibble)
     cocotb.start_soon(rom_driver(dut, rom))
 
