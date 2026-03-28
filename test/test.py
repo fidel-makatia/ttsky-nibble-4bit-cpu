@@ -76,11 +76,12 @@ async def reset_cpu(dut, rom=None):
 
 async def run_instructions(dut, n):
     """Run N full instructions (2 clock cycles each: FETCH + EXECUTE).
-    After this, the Nth instruction's result is visible."""
+    After this, the Nth instruction's result is visible.
+    We wait until the falling edge to allow gate-level outputs to settle."""
     for _ in range(n):
         await RisingEdge(dut.clk)  # FETCH
         await RisingEdge(dut.clk)  # EXECUTE
-    await Timer(1, unit="ns")
+    await FallingEdge(dut.clk)
 
 
 @cocotb.test()
